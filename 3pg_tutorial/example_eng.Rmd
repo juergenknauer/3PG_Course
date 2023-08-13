@@ -1,0 +1,224 @@
+---
+title: "3PG example"
+author: "Juergen Knauer (adopted from Jinyan Yang)"
+date: "`r Sys.Date()`"
+output:
+  distill::distill_article:
+    toc: true
+    toc_float: true
+    code_folding: true
+---
+```{r message=F, include=FALSE}
+library('r3PG')
+```
+
+We will now use real data from Cumberland Plain Woodland (-33.6166, 150.7377). We need to first read in meteorology data and then obtain plant physiological parameters.
+
+Here we will go through changing each input files (met,species,thinning and parameters).
+
+### 1) Met data
+
+Our site is in Richmond NSW, dominated by E.tereticornis Sm. The site has a mean annual temperature of 17 $^\circ C$ and a mean annual precipitation of 800mm.
+
+Let’s now read and look at the met data.
+
+```{r}
+met.df <- read.csv("/Users/30044953/Downloads/ros.met.csv")
+
+head(met.df)
+
+met.date <- apply(met.df[,c(2,3)],1,function(x) (paste(x,collapse = "-")))
+met.date <- paste0(met.date,"-15")   # append pseudo day
+met.df[,"date"] <- as.Date(met.date) # append to met.df data.frame
+
+```
+
+
+```{r}
+plot(met.df$prcp ~ met.df$date,xlab='',ylab = 'prcp (mm)',type="b")
+
+plot(met.df$srad ~ met.df$date,xlab='',ylab = 'srad (MJ m-2 d-1)',type="b")
+```
+
+We need to put in number of frost days and  $CO_{2}$ data. 
+
+```{r}
+# 
+met.df$frost_days <- 0
+# 
+met.df$co2  <- 410
+met.df$srad <- 2.3 * met.df$srad  # photosynthetically active radiation to total radiation
+```
+
+### 2 Site information
+
+```{r}
+site.new <- d_site
+
+site.new$latitude   <- -38
+site.new$altitude   <- 50
+site.new$soil_class <- 2
+site.new$asw_min    <- 50
+site.new$asw_max    <- 300
+site.new$asw_i      <- 150
+site.new$from       <- '2019-01'
+site.new$to         <- '2021-03'
+```
+
+
+### 3 Species composition
+
+Since we are using only one species, the inputs are just the initial conditions of the species.
+
+```{r}
+spc.new <- d_species[1,]
+spc.new$species <- 'Eucalyptus tereticornis'
+spc.new$planted <- '1900-01'
+spc.new$fertility <- 1
+spc.new$stems_n   <- 400
+spc.new$biom_stem <- 90
+spc.new$biom_root <- 10
+spc.new$biom_foliage <- 0.2
+```
+
+
+### 4 Plant physiology
+
+Let see if our species has been reported by previous literature.
+
+```{r}
+list.spc <- get_parameters(mode = "overview", sp_names = NULL)
+
+euc.list <- list.spc$species[grep(pattern = 'Eucalyptus',x = list.spc$species)]
+
+print(euc.list)
+```
+
+We did not find our species but a similar one, E.globulus. We are going to use the most of the parameters from E.globulus as example.
+
+```{r}
+## overview of available parameters
+get_parameters(mode = "overview", sp_names = 'Eucalyptus globulus')
+
+## let's select the data from Australia
+params.et <- get_parameters(mode = "parameters", sp_names = 'Eucalyptus globulus 97')
+
+# We use Pinus sylvestris as template
+par.new <- d_parameters[,c("parameter","Pinus sylvestris")]
+colnames(par.new)[2] <- "Eucalyptus tereticornis"
+
+## We change a few parameters manually
+par.new[par.new$parameter == "Tmin",2] <- params.et[params.et$parameter == "Tmin",2]
+par.new[par.new$parameter == "Tmax",2] <- params.et[params.et$parameter == "Tmax",2]
+par.new[par.new$parameter == "Topt",2] <- params.et[params.et$parameter == "Topt",2]
+
+par.new[par.new$parameter == 'alphaCx',2] <- params.et[params.et$parameter == 'alphaCx',2]
+par.new[par.new$parameter == 'SLA0',2] <- 50
+par.new[par.new$parameter == 'SLA1',2] <- 50
+par.new[par.new$parameter == 'CoeffCond',2] <- 0.05
+
+par.new[par.new$parameter == 'fCalpha700',2] <- 1.8
+par.new[par.new$parameter == 'fCg700',2] <- 0.6
+```
+
+### 4 Allometry and Thinning
+
+
+
+```{r}
+# We follow the workflow from above, but with 'sizeDist' instead of 'parameters'
+size.et <- get_parameters(mode = "sizeDist", sp_names = 'Eucalyptus globulus 97')
+
+head(size.et)
+
+# It turns out there is no allometry information for Eucalyptus globulus!
+# In this case, we assume the same allometry as for 'Pinus sylvestris
+
+size.new <- d_sizeDist[,c(1,3)]
+colnames(size.new)[2] <- "Eucalyptus tereticornis"
+
+head(size.new)
+
+```
+
+
+There are other parameter files related to thinning (d_thinning).
+
+To keep it simple, we do not account for thinning in the model. We can choose this option
+by saying thinning = NULL.
+
+
+
+
+Now that we have all the input files, we can run the model!
+
+### 5 Normal run
+
+```{r}
+climate.new <- prepare_climate(met.df,from="2019-01",to="2021-03")
+out.et <- run_3PG(site = site.new,
+                  species = spc.new,
+                  climate = climate.new,
+                  thinning = NULL,
+                  parameters = par.new,
+                  size_dist = size.new,
+                  settings = list(light_model = 2, 
+                                  transp_model = 2, phys_model = 2,
+                                  correct_bias = 0, calculate_d13c = 0),
+                  check_input = TRUE, 
+                  df_out = TRUE)
+
+
+# What would have happened with more precipitation?
+climate.new$co2 <- climate.new$co2 + 150
+out.et.eco2 <- run_3PG(site = site.new,
+                      species = spc.new,
+                      climate = climate.new,
+                      thinning = NULL,
+                      parameters = par.new,
+                      size_dist = size.new,
+                      settings = list(light_model = 2, 
+                                    transp_model = 2, phys_model = 2,
+                                    correct_bias = 0, calculate_d13c = 0),
+                      check_input = TRUE, 
+                      df_out = TRUE)
+```
+
+
+
+
+Let's check the change in GPP. 
+
+```{r}
+par(mar=c(5,5,1,1))
+plot(value~date,data = out.et.eco2[out.et.eco2$species == 'Eucalyptus tereticornis' &
+                                  out.et.eco2$variable == 'gpp',],
+       type='l',xlab='',ylab=expression('GPP'~(t~DM~ha^-1)),col="green")
+  
+  points(value~date,data = out.et[out.et$species == 'Eucalyptus tereticornis' &
+                                  out.et$variable == 'gpp',],
+         type='l',xlab='',col="red")
+  
+  legend('topleft',legend = c('eCO2','aCO2'),
+         lty='solid',col=c("green","red"),bty='n',horiz = T)
+
+```
+
+and finally on Transpiration
+
+```{r}
+par(mar=c(5,5,1,1))
+plot(value~date,data = out.et.eco2[out.et.eco2$species == 'Eucalyptus tereticornis' &
+                                  out.et.eco2$variable == 'transp_veg',],
+       type='l',xlab='',ylab=expression('Transpiration (mm month-1)'),col="green",
+       ylim=c(0,70))
+  
+  points(value~date,data = out.et[out.et$species == 'Eucalyptus tereticornis' &
+                                  out.et$variable == 'transp_veg',],
+         type='l',xlab='',col="red")
+  
+  legend('topleft',legend = c('eCO2','aCO2'),
+         lty='solid',col=c("green","red"),bty='n',horiz = T)
+
+```
+
